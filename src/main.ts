@@ -1,13 +1,82 @@
 import './style.css';
 import type { Message } from './types/chat';
-import { BotEngine, QUICK_PROMPTS } from './bot/botEngine';
+import { QUICK_PROMPTS } from './bot/botEngine';
 import { formatMessageText, formatTime } from './utils/formatter';
 import { sounds } from './utils/audio';
+
+const API_BASE_URL = 'http://127.0.0.1:8000';
+const SESSION_STORAGE_KEY = 'nova_session_id';
+const CHAT_SESSION_STORAGE_KEY = 'nova_chat_session_id';
+const AUTHENTICATED_USER_KEY = 'nova_authenticated_user';
+
+interface ChatSessionResponse {
+  success?: boolean;
+  message: string;
+  session_id: string;
+  session_token: string;
+  user: {
+    id: number;
+    name: string;
+  };
+}
+
+interface ChatResponse {
+  pergunta: string;
+  palavras_chave: string[];
+  artigos: {
+    titulo: string;
+    conteudo: string;
+    pontuacao: number;
+    fonte_api: string;
+  }[];
+  total: number;
+}
+
+function isChatSessionResponse(value: unknown): value is ChatSessionResponse {
+  return typeof value === 'object'
+    && value !== null
+    && 'message' in value
+    && typeof value.message === 'string'
+    && 'session_id' in value
+    && typeof value.session_id === 'string'
+    && 'session_token' in value
+    && typeof value.session_token === 'string'
+    && 'user' in value
+    && typeof value.user === 'object'
+    && value.user !== null
+    && 'id' in value.user
+    && typeof value.user.id === 'number'
+    && 'name' in value.user
+    && typeof value.user.name === 'string';
+}
+
+function isChatResponse(value: unknown): value is ChatResponse {
+  return typeof value === 'object'
+    && value !== null
+    && 'pergunta' in value
+    && typeof value.pergunta === 'string'
+    && 'palavras_chave' in value
+    && Array.isArray(value.palavras_chave)
+    && value.palavras_chave.every((keyword) => typeof keyword === 'string')
+    && 'artigos' in value
+    && Array.isArray(value.artigos)
+    && value.artigos.every((article) => typeof article === 'object'
+      && article !== null
+      && 'titulo' in article
+      && typeof article.titulo === 'string'
+      && 'conteudo' in article
+      && typeof article.conteudo === 'string'
+      && 'pontuacao' in article
+      && typeof article.pontuacao === 'number'
+      && 'fonte_api' in article
+      && typeof article.fonte_api === 'string')
+    && 'total' in value
+    && typeof value.total === 'number';
+}
 
 class ChatApp {
   private messages: Message[] = [];
   private isTyping: boolean = false;
-  private botEngine: BotEngine;
   private currentTheme: 'dark' | 'light' = 'dark';
 
   // DOM elements
@@ -21,9 +90,9 @@ class ChatApp {
   private soundBtn!: HTMLButtonElement;
   private exportBtn!: HTMLButtonElement;
   private clearBtn!: HTMLButtonElement;
+  private authStatusEl!: HTMLElement;
 
   constructor() {
-    this.botEngine = new BotEngine();
     this.initTheme();
     this.renderLayout();
     this.bindElements();
@@ -81,8 +150,9 @@ class ChatApp {
             <span class="status-dot"></span>
           </div>
           <div class="bot-info">
-            <h2>Nova Bot <span class="ts-badge">TS</span></h2>
-            <p>Smart TypeScript AI Assistant</p>
+            <h2>Assistente GLPI</h2>
+            <p>Suporte e consulta à base de conhecimento</p>
+            <p id="auth-status" class="auth-status" role="status" aria-live="polite">Não autenticado</p>
           </div>
         </div>
         <div class="header-actions">
@@ -113,8 +183,9 @@ class ChatApp {
           <textarea
             id="chat-input"
             class="chat-input"
-            placeholder="Type a message, ask a question, or test math..."
+            placeholder="Digite seu username para começar..."
             rows="1"
+            maxlength="4000"
             required
           ></textarea>
           <button type="submit" id="send-btn" class="send-btn" aria-label="Send message">
@@ -142,9 +213,11 @@ class ChatApp {
     this.soundBtn = document.getElementById('sound-btn') as HTMLButtonElement;
     this.exportBtn = document.getElementById('export-btn') as HTMLButtonElement;
     this.clearBtn = document.getElementById('clear-btn') as HTMLButtonElement;
+    this.authStatusEl = document.getElementById('auth-status')!;
 
     this.updateThemeButtonIcon();
     this.updateSoundButtonIcon();
+    this.updateAuthenticationStatus();
     this.renderQuickPrompts();
   }
 
@@ -213,6 +286,10 @@ class ChatApp {
   }
 
   private loadChatHistory(): void {
+    if (this.getChatSessionId()) {
+      this.chatInput.placeholder = 'Digite sua mensagem...';
+    }
+
     const saved = localStorage.getItem('nova_chat_history');
     if (saved) {
       try {
@@ -225,9 +302,19 @@ class ChatApp {
     // Default welcome message if empty
     if (this.messages.length === 0) {
       this.messages.push({
-        id: 'welcome-msg',
+        id: 'identity-prompt',
         sender: 'bot',
-        text: `👋 **Welcome to Nova Bot!**\n\nI am a responsive visual chat bot built from scratch with **TypeScript**.\n\nYou can:\n- Ask me questions about TypeScript & JavaScript 💻\n- Calculate math like \`calc 45 * 12\` 🧮\n- Ask for a \`joke\`, \`quote\`, or \`flip a coin\` 🎲\n- Click any prompt button below to get started!`,
+        text: this.getChatSessionId()
+          ? 'Olá! Como posso ajudar com o GLPI?'
+          : '👋 **Bem-vindo ao ChatBot do GLPI!**\n\nPara começar, envie seu username como primeira mensagem.',
+        timestamp: Date.now()
+      });
+      this.saveChatHistory();
+    } else if (!this.getChatSessionId() && !this.messages.some((message) => message.id === 'identity-prompt')) {
+      this.messages.push({
+        id: 'identity-prompt',
+        sender: 'bot',
+        text: 'Para iniciar uma sessão, envie seu username como primeira mensagem.',
         timestamp: Date.now()
       });
       this.saveChatHistory();
@@ -307,6 +394,135 @@ class ChatApp {
     this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
   }
 
+  private getSessionId(): string | null {
+    return localStorage.getItem(SESSION_STORAGE_KEY);
+  }
+
+  private getChatSessionId(): string | null {
+    return localStorage.getItem(CHAT_SESSION_STORAGE_KEY);
+  }
+
+  private updateAuthenticationStatus(): void {
+    const isAuthenticated = Boolean(this.getSessionId());
+    const userName = localStorage.getItem(AUTHENTICATED_USER_KEY);
+
+    this.authStatusEl.textContent = isAuthenticated
+      ? `Autenticado${userName ? ` como ${userName}` : ''}`
+      : 'Não autenticado';
+    this.authStatusEl.classList.toggle('authenticated', isAuthenticated);
+  }
+
+  private createChatSessionId(): string {
+    const sessionId = typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `session-${Date.now()}-${Math.random().toString(36).substring(2, 12)}`;
+    localStorage.setItem(CHAT_SESSION_STORAGE_KEY, sessionId);
+    return sessionId;
+  }
+
+  private async readApiResponse(response: Response): Promise<unknown> {
+    const responseText = await response.text();
+    let payload: unknown;
+
+    try {
+      payload = JSON.parse(responseText);
+    } catch {
+      payload = responseText;
+    }
+
+    if (!response.ok) {
+      const detail = typeof payload === 'object' && payload !== null && 'detail' in payload
+        ? payload.detail
+        : null;
+      const message = typeof detail === 'string'
+        ? detail
+        : `A API respondeu com erro HTTP ${response.status}.`;
+      throw new Error(message);
+    }
+
+    if (typeof payload !== 'object' || payload === null) {
+      throw new Error('A API retornou uma resposta inválida.');
+    }
+
+    return payload;
+  }
+
+  private async sendChatMessage(text: string): Promise<string> {
+    const sessionId = this.getChatSessionId() ?? this.createChatSessionId();
+    const authToken = this.getSessionId();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) {
+      headers.Authorization = `Bearer ${authToken}`;
+    }
+
+    const history = this.messages
+      .slice(0, -1)
+      .filter((message) => message.id !== 'identity-prompt' && message.sender !== 'system')
+      .slice(-50)
+      .map((message) => ({
+        role: message.sender === 'user' ? 'user' as const : 'assistant' as const,
+        content: message.text.slice(0, 4000)
+      }));
+
+    const response = await fetch(`${API_BASE_URL}/api/chat`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ message: text, session_id: sessionId, history })
+    });
+    if (response.status === 401 || response.status === 403) {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+      localStorage.removeItem(AUTHENTICATED_USER_KEY);
+      this.updateAuthenticationStatus();
+      throw new Error('A API não autorizou esta sessão. Verifique a autenticação do backend.');
+    }
+
+    const payload = await this.readApiResponse(response);
+    if (isChatSessionResponse(payload)) {
+      if (payload.success === false) {
+        throw new Error(payload.message || 'Não foi possível autenticar o usuário.');
+      }
+
+      localStorage.setItem(SESSION_STORAGE_KEY, payload.session_token);
+      localStorage.setItem(CHAT_SESSION_STORAGE_KEY, payload.session_id);
+      localStorage.setItem(AUTHENTICATED_USER_KEY, payload.user.name);
+      this.chatInput.placeholder = 'Digite sua mensagem...';
+      this.updateAuthenticationStatus();
+      return `${payload.message}\n\n✅ **Usuário autenticado como ${payload.user.name}.**`;
+    }
+
+    if (!isChatResponse(payload)) {
+      throw new Error('A API retornou uma resposta de chat inválida.');
+    }
+    const result = payload;
+
+    if (result.artigos.length === 0) {
+      return 'Não encontrei artigos relacionados à sua pergunta.';
+    }
+
+    const articles = result.artigos
+      .map((article) => `**${article.titulo}**\n\n${article.conteudo}\n\n_Fonte: ${article.fonte_api} · Relevância: ${article.pontuacao}_`)
+      .join('\n\n---\n\n');
+    const keywords = result.palavras_chave.length > 0
+      ? `\n\n**Palavras-chave:** ${result.palavras_chave.join(', ')}`
+      : '';
+
+    return `Encontrei ${result.total} artigo(s) relacionado(s):\n\n${articles}${keywords}`;
+  }
+
+  private appendBotMessage(text: string): void {
+    const botMsg: Message = {
+      id: `bot-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      sender: 'bot',
+      text,
+      timestamp: Date.now()
+    };
+
+    this.messages.push(botMsg);
+    this.appendMessageDOM(botMsg);
+    this.saveChatHistory();
+    this.scrollToBottom();
+  }
+
   private async handleSendMessage(text: string): Promise<void> {
     if (!text || this.isTyping) return;
 
@@ -336,40 +552,28 @@ class ChatApp {
     this.showTypingIndicator();
 
     try {
-      // 3. Compute Response & Delay
-      const response = await this.botEngine.getResponse(text);
-      const delay = this.botEngine.getTypingDelay(response);
-
-      setTimeout(() => {
-        this.hideTypingIndicator();
-
-        const botMsg: Message = {
-          id: `bot-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          sender: 'bot',
-          text: response,
-          timestamp: Date.now()
-        };
-
-        this.messages.push(botMsg);
-        this.appendMessageDOM(botMsg);
-        this.saveChatHistory();
-        this.scrollToBottom();
-        sounds.playReceive();
-
-        this.isTyping = false;
-        this.sendBtn.disabled = false;
-        this.chatInput.focus();
-      }, delay);
-    } catch {
+      const response = await this.sendChatMessage(text);
       this.hideTypingIndicator();
+      this.appendBotMessage(response);
+      sounds.playReceive();
+    } catch (error) {
+      this.hideTypingIndicator();
+      const detail = error instanceof Error ? error.message : 'Erro inesperado ao acessar o serviço.';
+      this.appendBotMessage(`Não foi possível concluir sua solicitação: ${detail}`);
+    } finally {
       this.isTyping = false;
       this.sendBtn.disabled = false;
+      this.chatInput.focus();
     }
   }
 
   private clearChat(): void {
     this.messages = [];
     localStorage.removeItem('nova_chat_history');
+    localStorage.removeItem(CHAT_SESSION_STORAGE_KEY);
+    localStorage.removeItem(SESSION_STORAGE_KEY);
+    localStorage.removeItem(AUTHENTICATED_USER_KEY);
+    this.updateAuthenticationStatus();
     sounds.playClear();
     this.loadChatHistory();
   }

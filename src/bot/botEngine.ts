@@ -1,12 +1,12 @@
 import type { QuickPrompt } from '../types/chat';
 
 export const QUICK_PROMPTS: QuickPrompt[] = [
-  { id: '1', label: 'Capabilities', prompt: 'What can you do?', icon: '⚡' },
-  { id: '2', label: 'TypeScript', prompt: 'Why should I use TypeScript?', icon: '📘' },
-  { id: '3', label: 'Math Calc', prompt: 'Calculate: 350 * 1.25', icon: '🧮' },
-  { id: '4', label: 'Joke', prompt: 'Tell me a programming joke', icon: '😄' },
-  { id: '5', label: 'Flip a Coin', prompt: 'Flip a coin', icon: '🪙' },
-  { id: '6', label: 'Quote', prompt: 'Give me an inspiring quote', icon: '💡' }
+  { id: '1', label: 'Abrir chamado', prompt: 'Como faço para abrir um chamado no GLPI?', icon: '🎫' },
+  { id: '2', label: 'Acompanhar chamado', prompt: 'Como acompanho o status do meu chamado?', icon: '🔎' },
+  { id: '3', label: 'Redefinir senha', prompt: 'Como faço para redefinir minha senha?', icon: '🔐' },
+  { id: '4', label: 'Adicionar acompanhamento', prompt: 'Como adiciono um acompanhamento ao chamado?', icon: '💬' },
+  { id: '5', label: 'Aprovar chamado', prompt: 'Como aprovo um chamado?', icon: '✅' },
+  { id: '6', label: 'Base de conhecimento', prompt: 'Quais artigos estão disponíveis na base de conhecimento?', icon: '📚' }
 ];
 
 const JOKES = [
